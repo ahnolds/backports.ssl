@@ -653,7 +653,16 @@ class SSLContext(object):
             capath = capath.encode('utf-8')
         self._ctx.load_verify_locations(cafile, capath)
         if cadata is not None:
-            self._ctx.load_verify_locations(BytesIO(cadata))
+            store = self._ctx.get_cert_store()
+            try:
+                memoryview(cadata)
+            except:
+                # Not memoryview-able, probably Unicode and hence PEM
+                cert = crypto.load_certificate(crypto.FILETYPE_PEM, cadata)
+            else:
+                # Memoryview-able, probably ASN1, convert to bytes since that's what load_certificate wants
+                cert = crypto.load_certificate(crypto.FILETYPE_ASN1, b(cadata))
+            store.add_cert(cert)
 
     def load_cert_chain(self, certfile, keyfile=None, password=None):
         self._ctx.use_certificate_file(certfile)
