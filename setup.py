@@ -19,6 +19,10 @@ with open('backports/ssl/__init__.py', 'r') as f:
     else:
         raise RuntimeError('No version number found!')
 
+full_requires = ['pyOpenSSL>=0.14', 'pyasn1>=0.1.7']
+if sys.version_info < (3, 4):
+    full_requires.append('enum34')
+
 setup(
     name='backports.ssl',
     version=version,
@@ -46,5 +50,5 @@ setup(
         'Topic :: Internet :: WWW/HTTP',
         'Topic :: Software Development :: Libraries',
     ],
-    extras_requires={'full': ['pyOpenSSL>=0.14', 'pyasn1>=0.1.7']},
+    extras_requires={'full': full_requires},
 )

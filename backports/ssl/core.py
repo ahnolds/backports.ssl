@@ -16,6 +16,7 @@ except ImportError:
     select = None
 import re
 import socket
+import sys
 import time
 
 import six
@@ -36,7 +37,8 @@ except ImportError:
 __target__ = 'ssl'
 
 __implements__ = ['SSLError', 'CertificateError', 'match_hostname', 'SSLSocket',
-                  'SSLContext', 'wrap_socket', '_fileobject']
+                  'SSLContext', 'wrap_socket', '_fileobject',
+                  'create_default_context', 'Purpose']
 
 _OPENSSL_ATTRS = dict(
     OP_NO_COMPRESSION='OP_NO_COMPRESSION',
@@ -616,6 +618,13 @@ class _fileobject(object):
             raise StopIteration
         return line
 
+class Purpose(object):
+    def __init__(self, oid):
+        self.oid = oid
+
+Purpose.SERVER_AUTH = Purpose('1.3.6.1.5.5.7.3.1')
+Purpose.CLIENT_AUTH = Purpose('1.3.6.1.5.5.7.3.2')
+
 
 class SSLContext(object):
     def __init__(self, protocol):
@@ -644,6 +653,13 @@ class SSLContext(object):
 
     def set_default_verify_paths(self):
         self._ctx.set_default_verify_paths()
+
+    def load_default_certs(self, purpose=Purpose.SERVER_AUTH):
+         if not isinstance(purpose, Purpose):
+             raise TypeError(purpose)
+         if sys.platform == "win32":
+             raise NotImplementedError('Windows Certificate Store handling not available')
+         self._ctx.set_default_verify_paths()
 
     def load_verify_locations(self, cafile=None, capath=None, cadata=None):
         # TODO factor out common code
@@ -683,6 +699,56 @@ class SSLContext(object):
                          suppress_ragged_eofs, server_hostname,
                          # TODO what if this is changed after the fact?
                          self.check_hostname)
+
+
+# Restricted and more secure ciphers for the server side (as of Python 3.5.1)
+# This list has been explicitly chosen to:
+#   * Prefer cipher suites that offer perfect forward secrecy (DHE/ECDHE)
+#   * Prefer ECDHE over DHE for better performance
+#   * Prefer any AES-GCM over any AES-CBC for better performance and security
+#   * Then Use HIGH cipher suites as a fallback
+#   * Then Use 3DES as fallback which is secure but slow
+#   * Disable NULL authentication, NULL encryption, MD5 MACs, DSS, and RC4 for
+#     security reasons
+_RESTRICTED_SERVER_CIPHERS = (
+    'ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:ECDH+HIGH:'
+    'DH+HIGH:ECDH+3DES:DH+3DES:RSA+AESGCM:RSA+AES:RSA+HIGH:RSA+3DES:!aNULL:'
+    '!eNULL:!MD5:!DSS:!RC4'
+)
+
+def create_default_context(purpose=Purpose.SERVER_AUTH, *, cafile=None,
+                           capath=None, cadata=None):
+    """Create a SSLContext object with default settings.
+
+    NOTE: The protocol and settings may change anytime without prior
+          deprecation. The values represent a fair balance between maximum
+          compatibility and security.
+    """
+    if not isinstance(purpose, Purpose):
+        raise TypeError(purpose)
+    # Select a strong protocol version
+    context = SSLContext(PROTOCOL_SSLv23)
+    context.options |= OP_NO_SSLv2
+    context.options |= OP_NO_SSLv3
+    context.options |= OP_NO_COMPRESSION
+    if purpose == Purpose.SERVER_AUTH:
+        # When authenticating servers, verify the cert and check the hostname
+        context.verify_mode = CERT_REQUIRED
+        context.check_hostname = True
+    elif purpose == Purpose.CLIENT_AUTH:
+        # Use the server's cipher preference for stronger encryption
+        context.options |= OP_CIPHER_SERVER_PREFERENCE
+        # Improve forward secrecy by not re-using DH/ECDH keys
+        context.options |= OP_SINGLE_DH_USE
+        context.options |= OP_SINGLE_ECDH_USE
+        # Set the allowed ciphers
+        context = set_cipher_list(_RESTRICTED_SERVER_CIPHERS)
+    if cafile or capath or cadata:
+        context.load_verify_locations(cafile, capath, cadata)
+    elif context.verify_mode != CERT_NONE:
+        # No ca info given but verification requested, try the defaults
+        context.load_default_certs(purpose)
+    return context
 
 
 def wrap_socket(sock, keyfile=None, certfile=None, server_side=False,
